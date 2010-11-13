@@ -12,7 +12,7 @@
  */
 function bot_social_irc_msg_channel($data) {
   // Look for 
-  if (preg_match_all('~\bhttps?://twitter\.com[\w\d/]*/(\d+)\b~', $data->message, $matches, PREG_SET_ORDER)) {
+  if (preg_match_all('~\bhttps?://twitter\.com/[\w#!/]*/(\d+)\b~', $data->message, $matches, PREG_SET_ORDER)) {
     foreach ($matches as $match) {
       // Perhaps we should actually use our own cache table some time…?
       $cache_id = 'bot_social_tweet_' . $match[1];
@@ -51,7 +51,7 @@ function bot_social_irc_msg_channel($data) {
                 // if someone says http://twitter.com/foo/status/444 and status
                 // 444 doesn't really belong to foo, we can handle it just fine,
                 // but Twitter can't.
-                $message = t('!url is @!scname (!name): "!status"', array('!url' => "http://twitter.com/{$tweet->user->screen_name}/status/{$tweet->id}", '!scname' => $tweet->user->screen_name, '!name' => $tweet->user->name, '!status' => $tweet->text));
+                $message = t('!url is @!scname (!name): "!status"', array('!url' => "http://twitter.com/#!/{$tweet->user->screen_name}/status/{$tweet->id}", '!scname' => $tweet->user->screen_name, '!name' => $tweet->user->name, '!status' => $tweet->text));
                 // We don't cache successful status fetches forever; Twitter
                 // users can delete tweets they later regret.
                 $expire = $now + 3600;
