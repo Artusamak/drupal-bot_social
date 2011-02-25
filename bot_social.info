@@ -1,4 +1,3 @@
-; $Id$
 name = Bot Social
 package = Bot
 dependencies[] = bot
