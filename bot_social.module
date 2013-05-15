@@ -3,67 +3,242 @@
 /**
  * @file
  * Bot submodule. Fetches and echoes Twitter statuses mentioned in IRC channels.
- * Caches.
  */
+
+/**
+ * Implements hook_menu().
+ */
+function bot_social_menu() {
+  return array(
+    'admin/config/bot/social' => array(
+      'title' => 'Bot Social',
+      'description' => t('Configure your bot framework with these settings.'),
+      'page callback' => 'drupal_get_form',
+      'page arguments' => array('bot_social_settings'),
+      'access arguments' => array('administer bot social'),
+    ),
+  );
+}
+
+/**
+ * Settings form to enable links parsing and collect Twitter application
+ * credentials.
+ */
+function bot_social_settings() {
+  // Twitter.
+  $form['bot_social']['twitter'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Twitter'),
+  );
+  $new_app_link = l(t('create a new application'), 'https://dev.twitter.com/apps/new');
+  $form['bot_social']['twitter']['help'] = array(
+    '#type' => 'html_tag',
+    '#tag' => 'p',
+    '#value' => t('Twitter requires you to use an application to access tweets content since version 1.1 of their API.<br />You need to !new_app_link and fulfill the following settings before being able to use this feature.', array('!new_app_link' => $new_app_link)),
+  );
+  $form['bot_social']['twitter']['bot_social_twitter_enabled'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Enabled'),
+    '#description' => t('Check/uncheck this option if you want to see your bot decode Twitter links.'),
+    '#default_value' => variable_get('bot_social_twitter_enabled', TRUE),
+  );
+  $form['bot_social']['twitter']['bot_social_twitter_consumer_key'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Consumer key'),
+    '#default_value' => variable_get('bot_social_twitter_consumer_key', ''),
+    '#size' => 25,
+  );
+  $form['bot_social']['twitter']['bot_social_twitter_consumer_secret'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Consumer secret'),
+    '#default_value' => variable_get('bot_social_twitter_consumer_secret', ''),
+    '#size' => 45,
+  );
+  // Youtube.
+  $form['bot_social']['youtube'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Youtube'),
+  );
+  $form['bot_social']['youtube']['bot_social_youtube_enabled'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Enabled'),
+    '#description' => t('Check/uncheck this option if you want to see your bot decode Youtube links.'),
+    '#default_value' => variable_get('bot_social_youtube_enabled', TRUE),
+  );
+  // Spotify.
+  $form['bot_social']['spotify'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Spotify'),
+  );
+  $form['bot_social']['spotify']['bot_social_spotify_enabled'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Enabled'),
+    '#description' => t('Check/uncheck this option if you want to see your bot decode Spotify links.'),
+    '#default_value' => variable_get('bot_social_spotify_enabled', TRUE),
+  );
+  return system_settings_form($form);
+}
 
 /**
  * Implementation of hook_irc_msg_channel(), a Bot hook.
  */
-function bot_social_irc_msg_channel($data) {
-  // Look for 
-  if (preg_match_all('~\bhttps?://twitter\.com/[\w#!/]*/(\d+)\b~', $data->message, $matches, PREG_SET_ORDER)) {
+function bot_social_irc_msg_channel($irc) {
+  // Check for Twitter links.
+  if (variable_get('bot_social_twitter_enabled', TRUE) && preg_match_all('~\bhttps?://twitter\.com/[\w#!/]*/(\d+)\b~', $irc->message, $matches, PREG_SET_ORDER)) {
     foreach ($matches as $match) {
-      // Perhaps we should actually use our own cache table some time…?
       $cache_id = 'bot_social_tweet_' . $match[1];
       $cached = cache_get($cache_id);
       $now = time();
       if ($cached == 0 || $cached->expire < $now) {
-        $response = drupal_http_request("http://api.twitter.com/1/statuses/show/{$match[1]}.json", array('User-Agent' => 'Drupal IRC Bot +(http://drupal.com/project/bot)'));
-        if ($response !== FALSE) {
-          if ($response->code == 503) {
-            $message = t('Bot Social: Fail Whale! (503 Service Unavailable)');
-            $expire = $now + 300;
-          }
-          elseif ($response->code == 404) {
-            $message = t('Bot Social: Tweet not found. (404)');
-            $expire = CACHE_PERMANENT;
-          }
-          elseif ($response->code != 200) {
-            $message = t('Bot Social: Unexpected response code. (!code !error)', array('!code' => $response->code, '!error' => $response->error));
-            $expire = $now + 600;
-          }
-          else {
-            $tweet = json_decode($response->data);
-            if ($tweet === NULL) {
+        // Since Twitter API 1.1 we can enjoy the tweet data for free
+        // we need to access the API from an authenticated application.
+        // 1. Build the bearer token.
+        $consumer_key = variable_get('bot_social_twitter_consumer_key', '');
+        $consumer_secret = variable_get('bot_social_twitter_consumer_secret', '');
+        $bearer = base64_encode($consumer_key . ':' . $consumer_secret);
+
+        // 2. Fetch an access token.
+        $url = 'https://api.twitter.com/oauth2/token';
+        $options = array(
+          'method' => 'POST',
+          'headers' => array(
+            'Authorization' => 'Basic ' . $bearer,
+            'Content-type' => 'application/x-www-form-urlencoded;charset=UTF-8',
+            'grant_type' => 'client_credentials',
+          ),
+          'data' => 'grant_type=client_credentials',
+        );
+        $r = drupal_http_request($url, $options);
+        $data = json_decode($r->data);
+
+        // 3. Enjoy the freedom of the API.
+        if ($r->code == 200 && $data->token_type == 'bearer') {
+          $url = 'https://api.twitter.com/1.1/statuses/show.json?id=' . $match[1];
+          $options = array(
+            'method' => 'GET',
+            'headers' => array(
+              'Authorization' => 'Bearer ' . $data->access_token,
+            ),
+            'data' => '',
+          );
+          $r = drupal_http_request($url, $options);
+          if ($r->code == 200) {
+            $tweet = json_decode($r->data);
+            if (!empty($tweet->text)) {
+              $tweet_text = $tweet->text;
+              // Check if the tweet worth looking for values to replace.
+              if ($tweet->entities !== NULL) {
+                // Display the images urls.
+                if (isset($tweet->entities->media)) {
+                  foreach ($tweet->entities->media as $media) {
+                    $tweet_text = str_replace($media->url, $media->media_url_https, $tweet_text);
+                  }
+                }
+                // Display the links source urls.
+                if (isset($tweet->entities->urls)) {
+                  foreach ($tweet->entities->urls as $url) {
+                    $tweet_text = str_replace($url->url, $url->expanded_url, $tweet_text);
+                  }
+                }
+              }
+              $tweet_url = 'https://twitter.com/' . $tweet->user->screen_name . '/status/' . $tweet->id;
+              $text = 'Tweeted by @!screen_name (!name) - "!text" - !tweet_url';
+              $placeholders = array(
+                '!screen_name' => $tweet->user->screen_name,
+                '!name' => $tweet->user->name,
+                '!text' => str_replace("\n", ' ', $tweet_text),
+                '!tweet_url' => $tweet_url
+              );
+              // Keep tweet for an hour. Users can delete their tweets.
+              $message = t($text, $placeholders);
+              $expire = $now + 3600;
+            }
+            else {
               $message = t('Bot Social: Response data decoding error.');
               $expire = $now;
             }
+          }
+          else {
+            if ($r->code == 503) {
+              $message = t('Bot Social: Fail Whale! (503 Service Unavailable)');
+              $expire = $now + 300;
+            }
+            elseif ($r->code == 404) {
+              $message = t('Bot Social: Tweet not found. (404)');
+              $expire = CACHE_PERMANENT;
+            }
+            elseif ($r->code != 200) {
+              $message = t('Bot Social: Unexpected response code. (!code !error)', array('!code' => $r->code, '!error' => $r->error));
+              $expire = $now + 600;
+            }
             else {
-              if (isset($tweet->error)) {
-                $message = t('Bot Social: Twitter error. (!error)', array('!error' => $tweet->error));
-                $expire = $now + 3600;
-              }
-              else {
-                // We're reconstructing the tweet URL instead of just echoing the
-                // one we matched in order to be more correct, since strictly the
-                // username part of the URL can be totally wrong. For example,
-                // if someone says http://twitter.com/foo/status/444 and status
-                // 444 doesn't really belong to foo, we can handle it just fine,
-                // but Twitter can't.
-                $message = t('!url is @!scname (!name): "!status"', array('!url' => "http://twitter.com/#!/{$tweet->user->screen_name}/status/{$tweet->id}", '!scname' => $tweet->user->screen_name, '!name' => $tweet->user->name, '!status' => $tweet->text));
-                // We don't cache successful status fetches forever; Twitter
-                // users can delete tweets they later regret.
-                $expire = $now + 3600;
-              }
+              $message = t('Unknown error');
+              $expire = $now;
             }
           }
+          cache_set($cache_id, $message, 'cache', $expire);
         }
-        cache_set($cache_id, $message, 'cache', $expire);
+        else {
+          // Error while fetching data from Twitter authentication,
+          // get out of here.
+          return;
+        }
       }
       else {
-        $message = /* 'CACHED: ' . */ $cached->data;
+        // Tweet from cache.
+        $message = $cached->data;
       }
-      bot_message($data->channel, $message);
+      bot_message($irc->channel, $message);
+    }
+  }
+  // Check for Youtube links.
+  $matches = array();
+  if (variable_get('bot_social_youtube_enabled', TRUE) && preg_match_all('~\bhttps?://www\.youtube\.com/[\w#!/\?=&]*\b~', $irc->message, $matches, PREG_SET_ORDER)) {
+    foreach ($matches as $match) {
+      if ($metas = get_meta_tags($match[0])) {
+        $message = t('Video: !name - !description - !url - !thumb', array('!name' => $metas['title'], '!description' => $metas['twitter:description'], '!url' => $match[0], '!thumb' => $metas['og:image']));
+        bot_message($irc->channel, $message);
+      }
+    }
+  }
+  // Check for Spotify links.
+  $matches = array();
+  if (variable_get('bot_social_spotify_enabled', TRUE) && preg_match_all('~\bhttps?://open\.spotify\.com/(album|track|artist)/([a-zA-Z0-9]+)\b~', $irc->message, $matches, PREG_SET_ORDER)) {
+    foreach ($matches as $match) {
+      $q = 'http://ws.spotify.com/lookup/1/.json?uri=spotify:' . $match[1] . ':' . $match[2];
+      $options = array(
+        'method' => 'GET',
+        'headers' => array(),
+        'data' => '',
+      );
+      $r = drupal_http_request($q, $options);
+      $data = json_decode($r->data);
+      if ($data !== NULL) {
+        // Sadly we can't parse the playlists yet (not exposed in Spotify API).
+        $artists = array();
+        switch ($match[1]) {
+          case 'track':
+            $track_name = $data->track->name;
+            $album_name = $data->track->album->name;
+            foreach ($data->track->artists as $artist) {
+              $artists[] = $artist->name;
+            }
+            $message = t('Spotify: Song !track_name (!album) - By !artists - !url', array('!track_name' => $track_name, '!album' => $album_name, '!artists' => implode(', ', $artists), '!url' => $match[0]));
+            break;
+
+          case 'album':
+            $album_name = $data->album->name;
+            $artist_name = $data->album->artist;
+            $message = t('Spotify: Album !album - By !artist - !url', array('!album' => $album_name, '!artist' => $artist_name, '!url' => $match[0]));
+            break;
+
+          case 'artist':
+            $artist_name = $data->artist->name;
+            $message = t('Spotify: Artist !artist - !url', array('!artist' => $artist_name, '!url' => $match[0]));
+            break;
+        }
+        bot_message($irc->channel, $message);
+      }
     }
   }
 }

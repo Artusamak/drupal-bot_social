@@ -1,6 +1,5 @@
 name = Bot Social
 package = Bot
 dependencies[] = bot
-description = "Fetches and echoes Twitter statuses."
-core = 6.x
-php = 5.2
+description = "Fetches and echoes Twitter, Youtube and Spotify statuses."
+core = 7.x
