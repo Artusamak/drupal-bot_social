@@ -3,3 +3,4 @@ package = Bot
 dependencies[] = bot
 description = "Fetches and echoes Twitter, Youtube and Spotify statuses."
 core = 7.x
+configure = admin/config/bot/social
